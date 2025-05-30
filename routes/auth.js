@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const pool = require('../config/db');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const { sendConfirmationEmail } = require('../utils/email');
 
 const router = express.Router();
@@ -15,7 +16,30 @@ const registerValidation = [
   body('name').notEmpty().withMessage('Name is required'),
   body('registrationType').isIn(['self', 'sales_agent']).withMessage('Invalid registration type'),
   body('userType').isIn(['individual', 'company']).withMessage('Invalid user type'),
+  body('salesAgentId').optional().isInt().withMessage('Invalid sales agent ID').custom(async (value, { req }) => {
+    if (req.body.registrationType === 'sales_agent' && !value) {
+      throw new Error('Sales agent ID is required for sales agent registration');
+    }
+    if (value) {
+      const result = await pool.query('SELECT id FROM sales_agents WHERE id = $1', [value]);
+      if (result.rows.length === 0) {
+        throw new Error('Invalid sales agent ID');
+      }
+    }
+    return true;
+  }),
 ];
+
+// Get all sales agents
+router.get('/sales-agents', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, name FROM sales_agents ORDER BY name');
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error(err.stack);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 // Register endpoint
 router.post('/register', registerValidation, async (req, res) => {
@@ -77,7 +101,7 @@ router.post('/register', registerValidation, async (req, res) => {
         areaName,
         city,
         country,
-        salesAgentId,
+        registrationType === 'sales_agent' ? salesAgentId : null,
         confirmationToken,
       ]
     );
@@ -127,17 +151,14 @@ router.post('/set-password', [
   const { token, password } = req.body;
 
   try {
-    // Find user by token
     const result = await pool.query('SELECT * FROM users WHERE confirmation_token = $1', [token]);
     if (result.rows.length === 0) {
       return res.status(400).json({ message: 'Invalid or expired token' });
     }
 
-    // Hash password
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Update user with password and confirm
     await pool.query(
       'UPDATE users SET password = $1, is_confirmed = TRUE, confirmation_token = NULL WHERE confirmation_token = $2',
       [hashedPassword, token]
@@ -150,4 +171,59 @@ router.post('/set-password', [
   }
 });
 
+// Login endpoint
+router.post('/login', async (req, res) => {
+  const { email, password, userType } = req.body;
+
+  console.log('Received login request:', { email, userType });
+
+  try {
+    // Validate input
+    if (!email || !password || !userType) {
+      return res.status(400).json({ message: 'Email, password, and user type are required' });
+    }
+
+    if (userType !== 'customer') {
+      return res.status(400).json({ message: 'Invalid user type for this endpoint' });
+    }
+
+    // Find user
+    const userResult = await pool.query(
+      'SELECT id, email, password, name, user_type FROM users WHERE email = $1 AND user_type IN ($2, $3)',
+      [email, 'individual', 'company']
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Compare password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { id: user.id, email: user.email, userType: 'customer' },
+      process.env.JWT_SECRET || 'your_jwt_secret',
+      { expiresIn: '1d' }
+    );
+
+    res.status(200).json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        userType: 'customer',
+      },
+    });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ message: 'Server error during login' });
+  }
+});
 module.exports = router;
