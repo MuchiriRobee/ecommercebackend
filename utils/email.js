@@ -25,5 +25,23 @@ const sendConfirmationEmail = async (email, token) => {
 
   await transporter.sendMail(mailOptions);
 };
+const sendResetEmail = async (email, name, token) => {
+  const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+  console.log('Sending reset email to:', email, 'with URL:', resetUrl);
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: 'Password Reset Request',
+    html: `
+      <h2>Password Reset</h2>
+      <p>Hi ${name || 'User'},</p>
+      <p>You requested a password reset for your FirstCraft account. Click the link below to set a new password:</p>
+      <a href="${resetUrl}">Reset Password</a>
+      <p>This link will expire in 1 hour. If you did not request a password reset, please ignore this email.</p>
+      <p>Thank you,<br>FirstCraft Team</p>
+    `,
+  };
 
-module.exports = { sendConfirmationEmail };
+  await transporter.sendMail(mailOptions);
+};
+module.exports = { sendConfirmationEmail, sendResetEmail };
