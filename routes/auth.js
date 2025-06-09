@@ -52,7 +52,7 @@ const authenticateToken = async (req, res, next) => {
 // Get all sales agents
 router.get('/sales-agents', async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, name FROM sales_agents ORDER BY name');
+    const result = await pool.query('SELECT id, name FROM sales_agents WHERE is_active = TRUE ORDER BY name');
     res.status(200).json(result.rows);
   } catch (err) {
     console.error('Error fetching sales agents:', err.stack);
@@ -321,22 +321,22 @@ router.post('/reset-password', [
   }
 });
 
-// Login endpoint
-router.post('/login', async (req, res) => {
+// Customer login endpoint
+router.post('/login', [
+  body('email').isEmail().withMessage('Invalid email format'),
+  body('password').notEmpty().withMessage('Password is required'),
+  body('userType').equals('customer').withMessage('Invalid user type'),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ message: errors.array()[0].msg });
+  }
+
   const { email, password, userType } = req.body;
 
-  console.log('Received login request:', { email, userType });
+  console.log('Received customer login request:', { email, userType });
 
   try {
-    // Validate input
-    if (!email || !password || !userType) {
-      return res.status(400).json({ message: 'Email, password, and user type are required' });
-    }
-
-    if (userType !== 'customer') {
-      return res.status(400).json({ message: 'Invalid user type for this endpoint' });
-    }
-
     // Find user
     const userResult = await pool.query(
       'SELECT id, email, password, name, user_type FROM users WHERE email = $1 AND user_type IN ($2, $3)',
@@ -372,7 +372,66 @@ router.post('/login', async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('Login error:', err.message);
+    console.error('Customer login error:', err.message);
+    res.status(500).json({ message: 'Server error during login' });
+  }
+});
+
+// Sales agent login endpoint
+router.post('/sales-agent-login', [
+  body('email').isEmail().withMessage('Invalid email format'),
+  body('password').notEmpty().withMessage('Password is required'),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ message: errors.array()[0].msg });
+  }
+
+  const { email, password } = req.body;
+
+  console.log('Received sales agent login request:', { email });
+
+  try {
+    // Find sales agent
+    const agentResult = await pool.query(
+      'SELECT id, email, name, password, is_active FROM sales_agents WHERE email = $1',
+      [email]
+    );
+
+    if (agentResult.rows.length === 0) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    const agent = agentResult.rows[0];
+
+    // Check if agent is active
+    if (!agent.is_active) {
+      return res.status(403).json({ message: 'Account is not active' });
+    }
+
+    // Compare password (plain text for now)
+    if (password !== agent.password) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { id: agent.id, email: agent.email, userType: 'sales_agent' },
+      process.env.JWT_SECRET || 'your_jwt_secret',
+      { expiresIn: '1d' }
+    );
+
+    res.status(200).json({
+      token,
+      user: {
+        id: agent.id,
+        email: agent.email,
+        name: agent.name,
+        userType: 'sales_agent',
+      },
+    });
+  } catch (err) {
+    console.error('Sales agent login error:', err.message);
     res.status(500).json({ message: 'Server error during login' });
   }
 });
