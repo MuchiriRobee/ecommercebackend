@@ -40,8 +40,8 @@ const authenticateToken = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret');
-    req.user = decoded; // { id, email, userType }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
     next();
   } catch (err) {
     console.error('Token verification error:', err.message);
@@ -139,8 +139,15 @@ router.post('/register', registerValidation, async (req, res) => {
 router.get('/confirm', async (req, res) => {
   const { token } = req.query;
 
+  if (!token) {
+    return res.status(400).json({ message: 'Token is required' });
+  }
+
   try {
-    const result = await pool.query('SELECT * FROM users WHERE confirmation_token = $1', [token]);
+    const result = await pool.query(
+      'SELECT email FROM users WHERE confirmation_token = $1',
+      [token]
+    );
     if (result.rows.length === 0) {
       return res.status(400).json({ message: 'Invalid or expired token' });
     }
