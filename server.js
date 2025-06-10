@@ -13,7 +13,7 @@ const app = express();
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: 'https://ecommercefrontend-vert.vercel.app/',
+  origin: 'https://ecommercefrontend-vert.vercel.app', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
