@@ -49,6 +49,35 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
+// Middleware to verify Admin
+const authenticateAdmin = async (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ message: 'Authentication token required' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    if (decoded.userType !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const admin = await pool.query('SELECT id FROM admins WHERE id = $1', [decoded.id]);
+    if (admin.rows.length === 0) {
+      return res.status(403).json({ message: 'Admin not found' });
+    }
+
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error('Admin token verification error:', err);
+    return res.status(403).json({ message: 'Invalid or expired token' });
+  }
+};
+
 // Get all sales agents
 router.get('/sales-agents', async (req, res) => {
   try {
@@ -443,6 +472,55 @@ router.post('/sales-agent-login', [
   }
 });
 
+// Admin login endpoint
+router.post('/admin-login', [
+  body('email').isEmail().withMessage('Invalid email format'),
+  body('password').notEmpty().withMessage('Password is required'),
+], async (req, res) => {
+  const errors = validationResult(req)
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ message: errors.array()[0].msg })
+  }
+
+  const { email, password } = req.body
+
+  try {
+    const adminResult = await pool.query(
+      'SELECT id, email, name, password FROM admins WHERE email = $1',
+      [email]
+    )
+
+    if (adminResult.rows.length === 0) {
+      return res.status(401).json({ message: 'Invalid email or password' })
+    }
+
+    const admin = adminResult.rows[0]
+
+    if (password !== admin.password) {
+      return res.status(401).json({ message: 'Invalid email or password' })
+    }
+
+    const token = jwt.sign(
+      { id: admin.id, email: admin.email, userType: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    )
+
+    res.status(200).json({
+      token,
+      user: {
+        id: admin.id,
+        email: admin.email,
+        name: admin.name,
+        userType: 'admin',
+      },
+    })
+  } catch (err) {
+    console.error('Admin login error:', err.message)
+    res.status(500).json({ message: 'Server error during login' })
+  }
+})
+
 // Change password endpoint
 router.post('/change-password', [
   authenticateToken,
@@ -492,4 +570,8 @@ router.post('/change-password', [
   }
 });
 
-module.exports = router;
+module.exports = {
+  router,
+  authenticateToken,
+  authenticateAdmin
+};
