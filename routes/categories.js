@@ -1,5 +1,5 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator');
+const { body, param, validationResult } = require('express-validator');
 const pool = require('../config/db');
 
 const router = express.Router();
@@ -32,6 +32,12 @@ const validateSubcategory = [
     .isLength({ max: 1000 })
     .withMessage('Description must be less than 1000 characters'),
   body('category_id')
+    .isInt({ min: 1 })
+    .withMessage('Valid category ID is required'),
+];
+
+const validateCategoryId = [
+  param('categoryId')
     .isInt({ min: 1 })
     .withMessage('Valid category ID is required'),
 ];
@@ -96,6 +102,24 @@ router.get('/:id', async (req, res, next) => {
       return res.status(404).json({ message: 'Category not found' });
     }
     res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get subcategories for a category
+router.get('/:categoryId/subcategories', validateCategoryId, handleValidationErrors, async (req, res, next) => {
+  const { categoryId } = req.params;
+  try {
+    const categoryCheck = await pool.query('SELECT 1 FROM categories WHERE id = $1', [categoryId]);
+    if (categoryCheck.rows.length === 0) {
+      return res.status(404).json({ message: 'Category not found' });
+    }
+    const result = await pool.query(
+      'SELECT id, name, description, category_id FROM subcategories WHERE category_id = $1 ORDER BY name',
+      [categoryId]
+    );
+    res.json(result.rows);
   } catch (error) {
     next(error);
   }
