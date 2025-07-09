@@ -232,7 +232,6 @@ const handleValidationErrors = (req, res, next) => {
 };
 
 router.get('/', [
-  query('parentCatId').optional().isInt({ min: 1 }).withMessage('Valid parent category ID is required'),
   query('categoryId').optional().isInt({ min: 1 }).withMessage('Valid category ID is required'),
   query('subcategoryId').optional().isInt({ min: 1 }).withMessage('Valid subcategory ID is required'),
   query('productCode').optional().isString().withMessage('Product code must be a string'),
@@ -240,7 +239,7 @@ router.get('/', [
   query('offset').optional().isInt({ min: 0 }).withMessage('Offset must be a non-negative integer'),
 ], handleValidationErrors, async (req, res, next) => {
   try {
-    const { parentCatId, categoryId, subcategoryId, productCode, limit = 20, offset = 0 } = req.query;
+    const { categoryId, subcategoryId, productCode, limit = 20, offset = 0 } = req.query;
     let query = `
       SELECT p.*,
              json_build_object(
@@ -281,10 +280,6 @@ router.get('/', [
     `;
     const params = [];
     let conditions = [];
-    if (parentCatId) {
-      conditions.push(`p.parent_cat_id = $${params.length + 1}`);
-      params.push(parentCatId);
-    }
     if (categoryId) {
       conditions.push(`p.category_id = $${params.length + 1}`);
       params.push(categoryId);
