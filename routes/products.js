@@ -232,6 +232,7 @@ const handleValidationErrors = (req, res, next) => {
 };
 
 router.get('/', [
+  query('parentCatId').optional().isInt({ min: 1 }).withMessage('Valid parent category ID is required'),
   query('categoryId').optional().isInt({ min: 1 }).withMessage('Valid category ID is required'),
   query('subcategoryId').optional().isInt({ min: 1 }).withMessage('Valid subcategory ID is required'),
   query('productCode').optional().isString().withMessage('Product code must be a string'),
@@ -239,7 +240,7 @@ router.get('/', [
   query('offset').optional().isInt({ min: 0 }).withMessage('Offset must be a non-negative integer'),
 ], handleValidationErrors, async (req, res, next) => {
   try {
-    const { categoryId, subcategoryId, productCode, limit = 20, offset = 0 } = req.query;
+    const { parentCatId, categoryId, subcategoryId, productCode, limit = 20, offset = 0 } = req.query;
     let query = `
       SELECT p.*,
              json_build_object(
@@ -280,28 +281,56 @@ router.get('/', [
     `;
     const params = [];
     let conditions = [];
-    if (categoryId) {
-      conditions.push(`p.category_id = $${params.length + 1}`);
-      params.push(categoryId);
-    }
+
+    // Prioritize subcategoryId if provided
     if (subcategoryId) {
+      // Validate subcategory exists and belongs to category and parent category
+      const subcategoryCheck = await pool.query(
+        'SELECT id FROM subcategories WHERE id = $1 AND category_id = $2 AND category_id IN (SELECT id FROM categories WHERE parent_category_id = $3)',
+        [subcategoryId, categoryId, parentCatId]
+      );
+      if (subcategoryCheck.rows.length === 0) {
+        return res.status(400).json({ message: 'Invalid subcategory ID or subcategory does not belong to the specified category/parent category' });
+      }
       conditions.push(`p.subcategory_id = $${params.length + 1}`);
       params.push(subcategoryId);
+    } else if (categoryId) {
+      // Validate category exists and belongs to parent category
+      const categoryCheck = await pool.query(
+        'SELECT id FROM categories WHERE id = $1 AND parent_category_id = $2',
+        [categoryId, parentCatId]
+      );
+      if (categoryCheck.rows.length === 0) {
+        return res.status(400).json({ message: 'Invalid category ID or category does not belong to the specified parent category' });
+      }
+      conditions.push(`p.category_id = $${params.length + 1}`);
+      params.push(categoryId);
+    } else if (parentCatId) {
+      // Validate parent category exists
+      const parentCategoryCheck = await pool.query('SELECT id FROM parent_categories WHERE id = $1', [parentCatId]);
+      if (parentCategoryCheck.rows.length === 0) {
+        return res.status(400).json({ message: 'Invalid parent category ID' });
+      }
+      conditions.push(`p.parent_cat_id = $${params.length + 1}`);
+      params.push(parentCatId);
     }
+
     if (productCode) {
       conditions.push(`p.product_code = $${params.length + 1}`);
       params.push(productCode);
     }
+
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }
+
     query += ` ORDER BY p.id LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
 
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
-    console.error(error);
+    console.error('Error fetching products:', error);
     next(error);
   }
 });
