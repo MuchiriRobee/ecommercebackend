@@ -17,7 +17,7 @@ const app = express();
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL ||'http://localhost:5173',
+origin: ['http://localhost:5173', 'https://ecommercefrontend-vert.vercel.app'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -28,7 +28,7 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static files
 app.use('/Uploads', express.static(path.join(__dirname, 'Uploads'), {
   setHeaders: (res) => {
-    res.set('Access-Control-Allow-Origin', 'http://localhost:5173', 'https://ecommercefrontend-vert.vercel.app');
+    res.set('Access-Control-Allow-Origin', 'http://localhost:5173', );
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   }
 }));
