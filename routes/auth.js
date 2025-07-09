@@ -89,6 +89,23 @@ router.get('/sales-agents', async (req, res) => {
   }
 });
 
+// Fetch user details
+router.get('/me', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT email, name, phone_number, street_name, city, country, cashback_phone_number FROM users WHERE id = $1 AND user_type IN ($2, $3)',
+      [req.user.id, 'individual', 'company']
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Fetch user error:', err.stack);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Register endpoint
 router.post('/register', registerValidation, async (req, res) => {
   const errors = validationResult(req);
@@ -477,34 +494,34 @@ router.post('/admin-login', [
   body('email').isEmail().withMessage('Invalid email format'),
   body('password').notEmpty().withMessage('Password is required'),
 ], async (req, res) => {
-  const errors = validationResult(req)
+  const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ message: errors.array()[0].msg })
+    return res.status(400).json({ message: errors.array()[0].msg });
   }
 
-  const { email, password } = req.body
+  const { email, password } = req.body;
 
   try {
     const adminResult = await pool.query(
       'SELECT id, email, name, password FROM admins WHERE email = $1',
       [email]
-    )
+    );
 
     if (adminResult.rows.length === 0) {
-      return res.status(401).json({ message: 'Invalid email or password' })
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    const admin = adminResult.rows[0]
+    const admin = adminResult.rows[0];
 
     if (password !== admin.password) {
-      return res.status(401).json({ message: 'Invalid email or password' })
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     const token = jwt.sign(
       { id: admin.id, email: admin.email, userType: 'admin' },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
-    )
+    );
 
     res.status(200).json({
       token,
@@ -514,12 +531,12 @@ router.post('/admin-login', [
         name: admin.name,
         userType: 'admin',
       },
-    })
+    });
   } catch (err) {
-    console.error('Admin login error:', err.message)
-    res.status(500).json({ message: 'Server error during login' })
+    console.error('Admin login error:', err.message);
+    res.status(500).json({ message: 'Server error during login' });
   }
-})
+});
 
 // Change password endpoint
 router.post('/change-password', [

@@ -10,7 +10,8 @@ const accountRoutes = require('./routes/account');
 const adminRoutes = require('./routes/admin');
 const categoriesRoutes = require('./routes/categories');
 const productsRouter = require('./routes/products');
-
+const ordersRouter = require('./routes/orders');
+const suppliersRouter = require('./routes/suppliers');
 const app = express();
 
 // Middleware
@@ -19,26 +20,30 @@ app.use(cors({
   origin: 'http://localhost:5173',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true // Add this line
-
+  credentials: true
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Serve static files
-app.use('/uploads', express.static(path.join(__dirname, 'Uploads'), {
+app.use('/Uploads', express.static(path.join(__dirname, 'Uploads'), {
   setHeaders: (res) => {
     res.set('Access-Control-Allow-Origin', 'http://localhost:5173');
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   }
 }));
+
+// Handle favicon.ico requests
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/account', accountRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/products', productsRouter);
-
+app.use('/api/orders', ordersRouter);
+app.use('/api/suppliers', suppliersRouter);
 // Error handling
 app.use((err, req, res, next) => {
   console.error(err.stack);
