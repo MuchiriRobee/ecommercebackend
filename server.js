@@ -15,7 +15,7 @@ const suppliersRouter = require('./routes/suppliers');
 const app = express();
 
 // Middleware
-app.use(helmet());
+app.use(helmet.crossOriginResourcePolicy({ policy: "cross-origin" }));
 app.use(cors({
 origin: ['http://localhost:5173', 'https://ecommercefrontend-vert.vercel.app'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
