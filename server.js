@@ -28,7 +28,7 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static files
 app.use('/Uploads', express.static(path.join(__dirname, 'Uploads'), {
   setHeaders: (res) => {
-    res.set('Access-Control-Allow-Origin', 'http://localhost:5173', );
+    res.set('Access-Control-Allow-Origin', 'http://localhost:5173', 'https://ecommercefrontend-vert.vercel.app');
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   }
 }));
