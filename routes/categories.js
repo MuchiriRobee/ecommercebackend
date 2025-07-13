@@ -189,17 +189,62 @@ router.put('/parent/:id', validateParentCategory, handleValidationErrors, async 
 
 // Parent Categories: DELETE
 router.delete('/parent/:id', async (req, res, next) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query('DELETE FROM parent_categories WHERE id = $1 RETURNING id', [req.params.id]);
+    await client.query('BEGIN');
+    
+    // Delete associated products
+    const categoryIdsResult = await client.query(
+      'SELECT id FROM categories WHERE parent_category_id = $1',
+      [req.params.id]
+    );
+    const categoryIds = categoryIdsResult.rows.map(row => row.id);
+    
+    if (categoryIds.length > 0) {
+      // Delete products associated with subcategories
+      await client.query(
+        'DELETE FROM products WHERE subcategory_id IN (SELECT id FROM subcategories WHERE category_id = ANY($1))',
+        [categoryIds]
+      );
+      // Delete products associated with categories
+      await client.query(
+        'DELETE FROM products WHERE category_id = ANY($1)',
+        [categoryIds]
+      );
+      // Delete subcategories
+      await client.query(
+        'DELETE FROM subcategories WHERE category_id = ANY($1)',
+        [categoryIds]
+      );
+      // Delete categories
+      await client.query(
+        'DELETE FROM categories WHERE parent_category_id = $1',
+        [req.params.id]
+      );
+    }
+    // Delete products associated with parent category
+    await client.query(
+      'DELETE FROM products WHERE parent_cat_id = $1',
+      [req.params.id]
+    );
+    // Delete parent category
+    const result = await client.query(
+      'DELETE FROM parent_categories WHERE id = $1 RETURNING id',
+      [req.params.id]
+    );
+    
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Parent category not found' });
     }
-    res.json({ message: 'Parent category deleted successfully' });
+    
+    await client.query('COMMIT');
+    res.json({ message: 'Parent category and associated data deleted successfully' });
   } catch (error) {
-    if (error.code === '23503') {
-      return res.status(400).json({ message: 'Cannot delete parent category due to associated categories' });
-    }
+    await client.query('ROLLBACK');
     next(error);
+  } finally {
+    client.release();
   }
 });
 
@@ -363,17 +408,43 @@ router.put('/:id', validateCategory, handleValidationErrors, async (req, res, ne
 
 // Categories: DELETE
 router.delete('/:id', async (req, res, next) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query('DELETE FROM categories WHERE id = $1 RETURNING id', [req.params.id]);
+    await client.query('BEGIN');
+    
+    // Delete products associated with subcategories
+    await client.query(
+      'DELETE FROM products WHERE subcategory_id IN (SELECT id FROM subcategories WHERE category_id = $1)',
+      [req.params.id]
+    );
+    // Delete products associated with category
+    await client.query(
+      'DELETE FROM products WHERE category_id = $1',
+      [req.params.id]
+    );
+    // Delete subcategories
+    await client.query(
+      'DELETE FROM subcategories WHERE category_id = $1',
+      [req.params.id]
+    );
+    // Delete category
+    const result = await client.query(
+      'DELETE FROM categories WHERE id = $1 RETURNING id',
+      [req.params.id]
+    );
+    
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Category not found' });
     }
-    res.json({ message: 'Category deleted successfully' });
+    
+    await client.query('COMMIT');
+    res.json({ message: 'Category and associated data deleted successfully' });
   } catch (error) {
-    if (error.code === '23503') {
-      return res.status(400).json({ message: 'Cannot delete category due to associated products or subcategories' });
-    }
+    await client.query('ROLLBACK');
     next(error);
+  } finally {
+    client.release();
   }
 });
 
@@ -411,7 +482,7 @@ router.post('/subcategories', validateSubCategory, handleValidationErrors, async
     };
     res.status(201).json(responseData);
   } catch (error) {
-    console.error('Subcategory POST error:', error); // Added for debugging
+    console.error('Subcategory POST error:', error);
     if (error.code === '23505') {
       return res.status(400).json({ message: 'Subcategory name already exists in this category' });
     }
@@ -462,7 +533,7 @@ router.put('/subcategories/:id', validateSubCategory, handleValidationErrors, as
     };
     res.json(responseData);
   } catch (error) {
-    console.error('Subcategory PUT error:', error); // Added for debugging
+    console.error('Subcategory PUT error:', error);
     if (error.code === '23505') {
       return res.status(400).json({ message: 'Subcategory name already exists in this category' });
     }
@@ -475,17 +546,33 @@ router.put('/subcategories/:id', validateSubCategory, handleValidationErrors, as
 
 // Subcategories: DELETE
 router.delete('/subcategories/:id', async (req, res, next) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query('DELETE FROM subcategories WHERE id = $1 RETURNING id', [req.params.id]);
+    await client.query('BEGIN');
+    
+    // Delete associated products
+    await client.query(
+      'DELETE FROM products WHERE subcategory_id = $1',
+      [req.params.id]
+    );
+    // Delete subcategory
+    const result = await client.query(
+      'DELETE FROM subcategories WHERE id = $1 RETURNING id',
+      [req.params.id]
+    );
+    
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Subcategory not found' });
     }
-    res.json({ message: 'Subcategory deleted successfully' });
+    
+    await client.query('COMMIT');
+    res.json({ message: 'Subcategory and associated products deleted successfully' });
   } catch (error) {
-    if (error.code === '23503') {
-      return res.status(400).json({ message: 'Cannot delete subcategory due to associated products' });
-    }
+    await client.query('ROLLBACK');
     next(error);
+  } finally {
+    client.release();
   }
 });
 
