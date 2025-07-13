@@ -487,6 +487,240 @@ router.post('/', upload.single('image'), validateProduct, handleValidationErrors
   }
 });
 
+router.post('/bulk', [
+  body('*.productName')
+    .trim()
+    .notEmpty()
+    .withMessage('Product name is required')
+    .isLength({ max: 255 })
+    .withMessage('Product name must be less than 255 characters'),
+  body('*.productCode')
+    .trim()
+    .notEmpty()
+    .withMessage('Product code is required')
+    .matches(/^[A-Z]\d{9}$/)
+    .withMessage('Product code must be 1 uppercase letter followed by 9 digits'),
+  body('*.parentCatId')
+    .isInt({ min: 1 })
+    .withMessage('Valid parent category ID is required'),
+  body('*.categoryId')
+    .isInt({ min: 1 })
+    .withMessage('Valid category ID is required'),
+  body('*.subcategoryId')
+    .isInt({ min: 1 })
+    .withMessage('Valid subcategory ID is required'),
+  body('*.uom')
+    .trim()
+    .notEmpty()
+    .withMessage('Unit of measure is required')
+    .isLength({ max: 20 })
+    .withMessage('Unit of measure must be less than 20 characters'),
+  body('*.stockUnits')
+    .isInt({ min: 0 })
+    .withMessage('Stock units must be a non-negative integer'),
+  body('*.alertQuantity')
+    .optional({ checkFalsy: true })
+    .isInt({ min: 0 })
+    .withMessage('Alert quantity must be a non-negative integer'),
+  body('*.sellingPrice1')
+    .isFloat({ min: 0, max: 9999999999999.99 })
+    .withMessage('Selling price 1 must be between 0 and 9,999,999,999,999.99')
+    .custom((value) => {
+      const decimals = (value.toString().split('.')[1] || '').length;
+      if (decimals > 2) throw new Error('Selling price 1 must have exactly 2 decimal places');
+      const integers = value.toString().split('.')[0].replace('-', '').length;
+      if (integers > 13) throw new Error('Selling price 1 must have at most 13 digits before decimal');
+      return true;
+    }),
+  body('*.qty1Min')
+    .isInt({ min: 1 })
+    .withMessage('Quantity 1 min must be a positive integer'),
+  body('*.qty1Max')
+    .isInt({ min: 1 })
+    .withMessage('Quantity 1 max must be a positive integer'),
+  body('*.sellingPrice2')
+    .optional()
+    .isFloat({ min: 0, max: 9999999999999.99 })
+    .withMessage('Selling price 2 must be between 0 and 9,999,999,999,999.99')
+    .custom((value) => {
+      const decimals = (value.toString().split('.')[1] || '').length;
+      if (decimals > 2) throw new Error('Selling price 2 must have exactly 2 decimal places');
+      const integers = value.toString().split('.')[0].replace('-', '').length;
+      if (integers > 13) throw new Error('Selling price 2 must have at most 13 digits before decimal');
+      return true;
+    }),
+  body('*.qty2Min')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('Quantity 2 min must be a positive integer'),
+  body('*.qty2Max')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('Quantity 2 max must be a positive integer'),
+  body('*.sellingPrice3')
+    .optional()
+    .isFloat({ min: 0, max: 9999999999999.99 })
+    .withMessage('Selling price 3 must be between 0 and 9,999,999,999,999.99')
+    .custom((value) => {
+      const decimals = (value.toString().split('.')[1] || '').length;
+      if (decimals > 2) throw new Error('Selling price 3 must have exactly 2 decimal places');
+      const integers = value.toString().split('.')[0].replace('-', '').length;
+      if (integers > 13) throw new Error('Selling price 3 must have at most 13 digits before decimal');
+      return true;
+    }),
+  body('*.qty3Min')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('Quantity 3 min must be a positive integer'),
+  body('*.cashbackRate')
+    .isFloat({ min: 0, max: 100 })
+    .withMessage('Cashback rate must be between 0 and 100')
+    .custom((value) => {
+      const decimals = (value.toString().split('.')[1] || '').length;
+      if (decimals > 2) throw new Error('Cashback rate must have exactly 2 decimal places');
+      return true;
+    }),
+  body('*.preferredVendor1')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('Valid supplier ID is required'),
+  body('*.description')
+    .optional()
+    .isLength({ max: 1000 })
+    .withMessage('Description must be less than 1000 characters'),
+], handleValidationErrors, async (req, res, next) => {
+  try {
+    const products = req.body;
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({ message: 'Request body must be a non-empty array of products' });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const insertedProducts = [];
+      for (let i = 0; i < products.length; i++) {
+        const product = products[i];
+
+        // Validate parent category
+        const parentCategoryResult = await client.query('SELECT id FROM parent_categories WHERE id = $1', [product.parentCatId]);
+        if (parentCategoryResult.rows.length === 0) {
+          throw new Error(`Row ${i + 1}: Parent category ID ${product.parentCatId} does not exist`);
+        }
+
+        // Validate category
+        const categoryResult = await client.query(
+          'SELECT id FROM categories WHERE id = $1 AND parent_category_id = $2',
+          [product.categoryId, product.parentCatId]
+        );
+        if (categoryResult.rows.length === 0) {
+          throw new Error(`Row ${i + 1}: Category ID ${product.categoryId} does not exist or does not belong to parent category ${product.parentCatId}`);
+        }
+
+        // Validate subcategory
+        const subcategoryResult = await client.query(
+          'SELECT id FROM subcategories WHERE id = $1 AND category_id = $2',
+          [product.subcategoryId, product.categoryId]
+        );
+        if (subcategoryResult.rows.length === 0) {
+          throw new Error(`Row ${i + 1}: Subcategory ID ${product.subcategoryId} does not exist or does not belong to category ${product.categoryId}`);
+        }
+
+        // Check for duplicate product code
+        const codeCheck = await client.query('SELECT id FROM products WHERE product_code = $1', [product.productCode]);
+        if (codeCheck.rows.length > 0) {
+          throw new Error(`Row ${i + 1}: Product code ${product.productCode} already exists`);
+        }
+
+        // Validate supplier
+        if (product.preferredVendor1) {
+          const supplierCheck = await client.query('SELECT id FROM suppliers WHERE id = $1', [product.preferredVendor1]);
+          if (supplierCheck.rows.length === 0) {
+            throw new Error(`Row ${i + 1}: Invalid supplier ID ${product.preferredVendor1}`);
+          }
+        }
+
+        const result = await client.query(
+          `
+          INSERT INTO products (
+            product_name, product_code, parent_cat_id, category_id, subcategory_id, uom, pack_size, description,
+            longer_description, product_barcode, etims_ref_code, expiry_date, image_url,
+            cost_price, selling_price1, selling_price2, selling_price3, qty1_min, qty1_max,
+            qty2_min, qty2_max, qty3_min, vat, cashback_rate, preferred_vendor1,
+            vendor_item_code, sa_cashback_1st, sa_cashback_2nd, sa_cashback_3rd,
+            sa_cashback_4th, stock_units, reorder_level, order_level, alert_quantity,
+            reorder_active
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
+          RETURNING *
+          `,
+          [
+            product.productName,
+            product.productCode,
+            product.parentCatId,
+            product.categoryId,
+            product.subcategoryId,
+            product.uom,
+            product.packSize || null,
+            product.description || null,
+            null, // longer_description
+            null, // product_barcode
+            null, // etims_ref_code
+            null, // expiry_date
+            null, // image_url (no image support in bulk)
+            parseFloat(product.costPrice) || 0, // Default to 0 if not provided
+            parseFloat(product.sellingPrice1),
+            parseFloat(product.sellingPrice2) || null,
+            parseFloat(product.sellingPrice3) || null,
+            product.qty1Min,
+            product.qty1Max,
+            product.qty2Min || null,
+            product.qty2Max || null,
+            product.qty3Min || null,
+            parseFloat(product.vat) || 0, // Default to 0 if not provided
+            parseFloat(product.cashbackRate),
+            product.preferredVendor1 || null,
+            null, // vendor_item_code
+            parseFloat(product.saCashback1stPurchase) || 0, // Default to 0
+            parseFloat(product.saCashback2ndPurchase) || 0, // Default to 0
+            parseFloat(product.saCashback3rdPurchase) || 0, // Default to 0
+            parseFloat(product.saCashback4thPurchase) || 0, // Default to 0
+            product.stockUnits,
+            product.reorderLevel || null,
+            product.orderLevel || null,
+            product.alertQuantity || null,
+            product.reorderActive || false // Default to false
+          ]
+        );
+        insertedProducts.push(result.rows[0]);
+      }
+
+      await client.query('COMMIT');
+      res.status(201).json(insertedProducts);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: error.message || 'Failed to import products' });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Server error:', error);
+    if (error.code === '23505') {
+      return res.status(400).json({ message: `Product code already exists` });
+    }
+    if (error.code === '23503') {
+      return res.status(400).json({ message: `Invalid foreign key: check parent_cat_id, category_id, subcategory_id, or preferred_vendor1` });
+    }
+    if (error.code === '22003') {
+      return res.status(400).json({ message: 'Numeric value out of range' });
+    }
+    if (error.code === '23502') {
+      return res.status(400).json({ message: 'Required fields cannot be null' });
+    }
+    next(error);
+  }
+});
+
 router.put('/:id', upload.single('image'), validateProduct, handleValidationErrors, async (req, res, next) => {
   try {
     const {
