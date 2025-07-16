@@ -17,8 +17,8 @@ const app = express();
 // Middleware
 app.use(helmet.crossOriginResourcePolicy({ policy: "cross-origin" }));
 app.use(cors({
-origin: ['http://localhost:5173', 'https://ecommercefrontend-vert.vercel.app'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  origin: ['http://localhost:5173', 'https://ecommercefrontend-vert.vercel.app'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
@@ -28,7 +28,7 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static files
 app.use('/Uploads', express.static(path.join(__dirname, 'Uploads'), {
   setHeaders: (res) => {
-    res.set('Access-Control-Allow-Origin', 'http://localhost:5173', 'https://ecommercefrontend-vert.vercel.app');
+    res.set('Access-Control-Allow-Origin', 'http://localhost:5173, https://ecommercefrontend-vert.vercel.app');
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
   }
 }));
@@ -44,6 +44,7 @@ app.use('/api/categories', categoriesRoutes);
 app.use('/api/products', productsRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/suppliers', suppliersRouter);
+
 // Error handling
 app.use((err, req, res, next) => {
   console.error(err.stack);

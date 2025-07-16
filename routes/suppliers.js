@@ -44,18 +44,22 @@ router.post('/', async (req, res) => {
     building_name, 
     street_name, 
     city, 
-    postal_address 
+    postal_address,
+    kra_number
   } = req.body;
   
-  if (!name || !email || !telephone || !contact_name || !office || !street_name || !city || !postal_address) {
+  if (!name || !email || !telephone || !contact_name || !office || !street_name || !city || !postal_address || !kra_number) {
     return res.status(400).json({ message: 'Required fields are missing' });
+  }
+  if (!/^[A-Za-z0-9]+$/.test(kra_number)) {
+    return res.status(400).json({ message: 'KRA Number must be alphanumeric' });
   }
 
   try {
     const code = await generateSupplierCode(name);
     const { rows } = await pool.query(
-      'INSERT INTO suppliers (name, code, email, telephone, telephone2, contact_name, contact_name2, office, floor, building_name, street_name, city, postal_address) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *',
-      [name, code, email, telephone, telephone2, contact_name, contact_name2, office, floor, building_name, street_name, city, postal_address]
+      'INSERT INTO suppliers (name, code, email, telephone, telephone2, contact_name, contact_name2, office, floor, building_name, street_name, city, postal_address, kra_number) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *',
+      [name, code, email, telephone, telephone2, contact_name, contact_name2, office, floor, building_name, street_name, city, postal_address, kra_number]
     );
     res.status(201).json(rows[0]);
   } catch (error) {
@@ -79,17 +83,21 @@ router.put('/:id', async (req, res) => {
     building_name, 
     street_name, 
     city, 
-    postal_address 
+    postal_address,
+    kra_number
   } = req.body;
 
-  if (!name || !email || !telephone || !contact_name || !office || !street_name || !city || !postal_address) {
+  if (!name || !email || !telephone || !contact_name || !office || !street_name || !city || !postal_address || !kra_number) {
     return res.status(400).json({ message: 'Required fields are missing' });
+  }
+  if (!/^[A-Za-z0-9]+$/.test(kra_number)) {
+    return res.status(400).json({ message: 'KRA Number must be alphanumeric' });
   }
 
   try {
     const { rows } = await pool.query(
-      'UPDATE suppliers SET name = $1, email = $2, telephone = $3, telephone2 = $4, contact_name = $5, contact_name2 = $6, office = $7, floor = $8, building_name = $9, street_name = $10, city = $11, postal_address = $12, updated_at = CURRENT_TIMESTAMP WHERE id = $13 RETURNING *',
-      [name, email, telephone, telephone2, contact_name, contact_name2, office, floor, building_name, street_name, city, postal_address, id]
+      'UPDATE suppliers SET name = $1, email = $2, telephone = $3, telephone2 = $4, contact_name = $5, contact_name2 = $6, office = $7, floor = $8, building_name = $9, street_name = $10, city = $11, postal_address = $12, kra_number = $13, updated_at = CURRENT_TIMESTAMP WHERE id = $14 RETURNING *',
+      [name, email, telephone, telephone2, contact_name, contact_name2, office, floor, building_name, street_name, city, postal_address, kra_number, id]
     );
     if (rows.length === 0) {
       return res.status(404).json({ message: 'Supplier not found' });
