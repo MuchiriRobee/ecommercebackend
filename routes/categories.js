@@ -265,7 +265,18 @@ router.get('/', async (req, res, next) => {
                        'id', s.id,
                        'name', s.name,
                        'subcategory_code', COALESCE(s.subcategory_code, '01'),
-                       'category_name', c.name
+                       'category_name', c.name,
+                       'products', (
+                         SELECT json_agg(
+                           json_build_object(
+                             'id', p.id,
+                             'product_name', p.product_name,
+                             'product_code', p.product_code
+                           ) ORDER BY p.product_name
+                         )
+                         FROM products p
+                         WHERE p.subcategory_id = s.id
+                       )
                      ) ORDER BY s.name
                    )
                    FROM subcategories s
@@ -280,7 +291,13 @@ router.get('/', async (req, res, next) => {
     `);
     const data = result.rows.map(row => ({
       ...row,
-      categories: row.categories.filter(cat => cat.id !== null)
+      categories: row.categories.filter(cat => cat.id !== null).map(cat => ({
+        ...cat,
+        subcategories: cat.subcategories ? cat.subcategories.map(sub => ({
+          ...sub,
+          products: sub.products || []
+        })) : []
+      }))
     }));
     res.json(data);
   } catch (error) {
