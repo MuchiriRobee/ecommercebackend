@@ -346,6 +346,25 @@ router.put(
   }
 );
 
+// DELETE /auth/sales-agents/:id - Delete a sales agent
+router.delete('/sales-agents/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Check if agent exists
+    const agentCheck = await pool.query('SELECT * FROM sales_agents WHERE id = $1', [id]);
+    if (agentCheck.rows.length === 0) {
+      return res.status(404).json({ message: 'Sales agent not found' });
+    }
+
+    // Delete agent
+    await pool.query('DELETE FROM sales_agents WHERE id = $1', [id]);
+    res.status(200).json({ message: 'Sales agent deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting sales agent:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 // Fetch user details
 router.get('/me', authenticateToken, async (req, res) => {
   try {
