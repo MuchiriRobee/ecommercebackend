@@ -4,9 +4,45 @@ const pool = require('../config/db');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { sendConfirmationEmail, sendResetEmail } = require('../utils/email');
+const { sendConfirmationEmail, sendAgentConfirmationEmail, sendResetEmail } = require('../utils/email');
+const multer = require('multer');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'Uploads/');
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, `${file.fieldname}-${uniqueSuffix}${path.extname(file.originalname)}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit for all files
+  },
+  fileFilter: (req, file, cb) => {
+    const fileTypes = {
+      agentPhoto: /jpeg|png/,
+      idPhotoFront: /jpeg|png/,
+      idPhotoBack: /jpeg|png/,
+      kraCertificate: /pdf/,
+    };
+    const allowedType = fileTypes[file.fieldname];
+    const extname = allowedType.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedType.test(file.mimetype);
+    if (extname && mimetype) {
+      return cb(null, true);
+    }
+    cb(new Error(`Invalid file type for ${file.fieldname}. Allowed types: ${allowedType}`));
+  },
+});
 
 // Validation middleware for registration
 const registerValidation = [
@@ -78,16 +114,237 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
+// Generate agent code
+const generateAgentCode = async (firstName, lastName) => {
+  const firstInitial = firstName.charAt(0).toUpperCase();
+  const lastInitial = lastName.charAt(0).toUpperCase();
+  const result = await pool.query('SELECT COUNT(*) FROM sales_agents');
+  const sequence = String(Number(result.rows[0].count) + 1).padStart(3, '0');
+  return `${firstInitial}${lastInitial}${sequence}`;
+};
+
 // Get all sales agents
 router.get('/sales-agents', async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, name FROM sales_agents WHERE is_active = TRUE ORDER BY name');
+    const result = await pool.query('SELECT id, first_name || \' \' || last_name AS name FROM sales_agents WHERE is_active = TRUE ORDER BY name');
     res.status(200).json(result.rows);
   } catch (err) {
     console.error('Error fetching sales agents:', err.stack);
     res.status(500).json({ message: 'Server error' });
   }
 });
+
+// POST /auth/sales-agents - Register new sales agent
+router.post(
+  '/sales-agents',
+  upload.fields([
+    { name: 'agentPhoto', maxCount: 1 },
+    { name: 'idPhotoFront', maxCount: 1 },
+    { name: 'idPhotoBack', maxCount: 1 },
+    { name: 'kraCertificate', maxCount: 1 },
+  ]),
+  async (req, res) => {
+    const {
+      first_name,
+      last_name,
+      email,
+      phone_number,
+      id_number,
+      kra_pin,
+      is_active = true,
+    } = req.body;
+
+    // Validate required fields
+    if (!first_name || !last_name || !email || !phone_number || !id_number || !kra_pin) {
+      return res.status(400).json({ message: 'All required fields must be provided' });
+    }
+
+    // Validate email format
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      return res.status(400).json({ message: 'Invalid email format' });
+    }
+
+    // Validate phone number (starts with 07, 10 digits)
+    if (!/^07\d{8}$/.test(phone_number)) {
+      return res.status(400).json({ message: 'Phone number must start with 07 and be 10 digits' });
+    }
+
+    // Validate ID number (10 digits)
+    if (!/^\d{8}$/.test(id_number)) {
+      return res.status(400).json({ message: 'ID number must be exactly 10 digits' });
+    }
+
+    // Validate KRA PIN (10-11 alphanumeric characters)
+    if (!/^[A-Za-z0-9]{10,11}$/.test(kra_pin)) {
+      return res.status(400).json({ message: 'KRA PIN must be 10-11 alphanumeric characters' });
+    }
+
+    try {
+      // Check for duplicate email or agent code
+      const emailCheck = await pool.query('SELECT * FROM sales_agents WHERE email = $1', [email]);
+      if (emailCheck.rows.length > 0) {
+        return res.status(400).json({ message: 'Email already exists' });
+      }
+
+      const agent_code = await generateAgentCode(first_name, last_name);
+      const agentCodeCheck = await pool.query('SELECT * FROM sales_agents WHERE agent_code = $1', [agent_code]);
+      if (agentCodeCheck.rows.length > 0) {
+        return res.status(400).json({ message: 'Agent code already exists' });
+      }
+
+      // Handle file uploads
+      const agentPhoto = req.files['agentPhoto'] ? req.files['agentPhoto'][0].path : null;
+      const idPhotoFront = req.files['idPhotoFront'] ? req.files['idPhotoFront'][0].path : null;
+      const idPhotoBack = req.files['idPhotoBack'] ? req.files['idPhotoBack'][0].path : null;
+      const kraCertificate = req.files['kraCertificate'] ? req.files['kraCertificate'][0].path : null;
+
+      // Generate confirmation token
+      const confirmation_token = uuidv4();
+
+      // Insert into database
+      const result = await pool.query(
+        `INSERT INTO sales_agents (
+          first_name, last_name, agent_code, email, phone_number, id_number, kra_pin,
+          agent_photo, id_photo_front, id_photo_back, kra_certificate, is_active,
+          confirmation_token, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+        RETURNING *`,
+        [
+          first_name,
+          last_name,
+          agent_code,
+          email,
+          phone_number,
+          id_number,
+          kra_pin,
+          agentPhoto,
+          idPhotoFront,
+          idPhotoBack,
+          kraCertificate,
+          is_active,
+          confirmation_token,
+        ]
+      );
+
+      const agent = result.rows[0];
+
+      // Send confirmation email
+      await sendAgentConfirmationEmail(email, `${first_name} ${last_name}`, confirmation_token);
+
+      res.status(201).json({ agent, message: 'Sales agent registered successfully' });
+    } catch (error) {
+      console.error('Error registering sales agent:', error);
+      res.status(500).json({ message: 'Server error' });
+    }
+  }
+);
+
+// PUT /auth/sales-agents/:id - Update sales agent
+router.put(
+  '/sales-agents/:id',
+  upload.fields([
+    { name: 'agentPhoto', maxCount: 1 },
+    { name: 'idPhotoFront', maxCount: 1 },
+    { name: 'idPhotoBack', maxCount: 1 },
+    { name: 'kraCertificate', maxCount: 1 },
+  ]),
+  async (req, res) => {
+    const { id } = req.params;
+    const {
+      first_name,
+      last_name,
+      email,
+      phone_number,
+      id_number,
+      kra_pin,
+      is_active,
+    } = req.body;
+
+    // Validate required fields
+    if (!first_name || !last_name || !email || !phone_number || !id_number || !kra_pin) {
+      return res.status(400).json({ message: 'All required fields must be provided' });
+    }
+
+    // Validate email format
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      return res.status(400).json({ message: 'Invalid email format' });
+    }
+
+    // Validate phone number (starts with 07, 10 digits)
+    if (!/^07\d{8}$/.test(phone_number)) {
+      return res.status(400).json({ message: 'Phone number must start with 07 and be 10 digits' });
+    }
+
+    // Validate ID number (10 digits)
+    if (!/^\d{8}$/.test(id_number)) {
+      return res.status(400).json({ message: 'ID number must be exactly 10 digits' });
+    }
+
+    // Validate KRA PIN (10-11 alphanumeric characters)
+    if (!/^[A-Za-z0-9]{10,11}$/.test(kra_pin)) {
+      return res.status(400).json({ message: 'KRA PIN must be 10-11 alphanumeric characters' });
+    }
+
+    try {
+      // Check if agent exists
+      const agentCheck = await pool.query('SELECT * FROM sales_agents WHERE id = $1', [id]);
+      if (agentCheck.rows.length === 0) {
+        return res.status(404).json({ message: 'Sales agent not found' });
+      }
+
+      // Check for duplicate email (excluding current agent)
+      const emailCheck = await pool.query('SELECT * FROM sales_agents WHERE email = $1 AND id != $2', [email, id]);
+      if (emailCheck.rows.length > 0) {
+        return res.status(400).json({ message: 'Email already exists' });
+      }
+
+      // Handle file uploads
+      const agentPhoto = req.files['agentPhoto'] ? req.files['agentPhoto'][0].path : agentCheck.rows[0].agent_photo;
+      const idPhotoFront = req.files['idPhotoFront'] ? req.files['idPhotoFront'][0].path : agentCheck.rows[0].id_photo_front;
+      const idPhotoBack = req.files['idPhotoBack'] ? req.files['idPhotoBack'][0].path : agentCheck.rows[0].id_photo_back;
+      const kraCertificate = req.files['kraCertificate'] ? req.files['kraCertificate'][0].path : agentCheck.rows[0].kra_certificate;
+
+      // Update agent in database
+      const result = await pool.query(
+        `UPDATE sales_agents SET
+          first_name = $1,
+          last_name = $2,
+          email = $3,
+          phone_number = $4,
+          id_number = $5,
+          kra_pin = $6,
+          agent_photo = $7,
+          id_photo_front = $8,
+          id_photo_back = $9,
+          kra_certificate = $10,
+          is_active = $11,
+          updated_at = NOW()
+        WHERE id = $12
+        RETURNING *`,
+        [
+          first_name,
+          last_name,
+          email,
+          phone_number,
+          id_number,
+          kra_pin,
+          agentPhoto,
+          idPhotoFront,
+          idPhotoBack,
+          kraCertificate,
+          is_active,
+          id,
+        ]
+      );
+
+      const agent = result.rows[0];
+      res.status(200).json({ agent, message: 'Sales agent updated successfully' });
+    } catch (error) {
+      console.error('Error updating sales agent:', error);
+      res.status(500).json({ message: 'Server error' });
+    }
+  }
+);
 
 // Fetch user details
 router.get('/me', authenticateToken, async (req, res) => {
@@ -190,15 +447,21 @@ router.get('/confirm', async (req, res) => {
   }
 
   try {
-    const result = await pool.query(
+    const userResult = await pool.query(
       'SELECT email FROM users WHERE confirmation_token = $1',
       [token]
     );
-    if (result.rows.length === 0) {
+    const agentResult = await pool.query(
+      'SELECT email FROM sales_agents WHERE confirmation_token = $1',
+      [token]
+    );
+
+    if (userResult.rows.length === 0 && agentResult.rows.length === 0) {
       return res.status(400).json({ message: 'Invalid or expired token' });
     }
 
-    res.status(200).json({ message: 'Token valid', email: result.rows[0].email });
+    const email = userResult.rows[0]?.email || agentResult.rows[0]?.email;
+    res.status(200).json({ message: 'Token valid', email });
   } catch (err) {
     console.error('Token validation error:', err.stack);
     res.status(500).json({ message: 'Server error' });
@@ -223,18 +486,27 @@ router.post('/set-password', [
   const { token, password } = req.body;
 
   try {
-    const result = await pool.query('SELECT * FROM users WHERE confirmation_token = $1', [token]);
-    if (result.rows.length === 0) {
+    const userResult = await pool.query('SELECT * FROM users WHERE confirmation_token = $1', [token]);
+    const agentResult = await pool.query('SELECT * FROM sales_agents WHERE confirmation_token = $1', [token]);
+
+    if (userResult.rows.length === 0 && agentResult.rows.length === 0) {
       return res.status(400).json({ message: 'Invalid or expired token' });
     }
 
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    await pool.query(
-      'UPDATE users SET password = $1, is_confirmed = TRUE, confirmation_token = NULL WHERE confirmation_token = $2',
-      [hashedPassword, token]
-    );
+    if (userResult.rows.length > 0) {
+      await pool.query(
+        'UPDATE users SET password = $1, is_confirmed = TRUE, confirmation_token = NULL WHERE confirmation_token = $2',
+        [hashedPassword, token]
+      );
+    } else {
+      await pool.query(
+        'UPDATE sales_agents SET password = $1, is_confirmed = TRUE, confirmation_token = NULL WHERE confirmation_token = $2',
+        [hashedPassword, token]
+      );
+    }
 
     res.status(200).json({ message: 'Password set successfully' });
   } catch (err) {
@@ -257,24 +529,32 @@ router.post('/forgot-password', [
   try {
     // Check if email exists
     const userResult = await pool.query('SELECT id, email, name FROM users WHERE email = $1', [email]);
-    if (userResult.rows.length === 0) {
+    const agentResult = await pool.query('SELECT id, email, first_name || \' \' || last_name AS name FROM sales_agents WHERE email = $1', [email]);
+
+    if (userResult.rows.length === 0 && agentResult.rows.length === 0) {
       return res.status(404).json({ message: 'Email not found' });
     }
 
-    const user = userResult.rows[0];
+    const user = userResult.rows[0] || agentResult.rows[0];
 
     // Generate reset token
     const resetToken = crypto.randomBytes(32).toString('hex');
     const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour expiry
 
     // Store reset token and expiry in database
-    await pool.query(
-      'UPDATE users SET reset_token = $1, reset_token_expiry = $2 WHERE email = $3',
-      [resetToken, resetTokenExpiry, email]
-    );
+    if (userResult.rows.length > 0) {
+      await pool.query(
+        'UPDATE users SET reset_token = $1, reset_token_expiry = $2 WHERE email = $3',
+        [resetToken, resetTokenExpiry, email]
+      );
+    } else {
+      await pool.query(
+        'UPDATE sales_agents SET reset_token = $1, reset_token_expiry = $2 WHERE email = $3',
+        [resetToken, resetTokenExpiry, email]
+      );
+    }
 
     // Send reset email
-    console.log('Generated reset token:', resetToken);
     await sendResetEmail(email, user.name || 'User', resetToken);
 
     res.status(200).json({ message: 'Password reset email sent. Please check your inbox.' });
@@ -296,17 +576,21 @@ router.get('/verify-reset-token', async (req, res) => {
 
     console.log('Verifying reset token:', token);
 
-    const result = await pool.query(
+    const userResult = await pool.query(
       'SELECT email, reset_token_expiry FROM users WHERE reset_token = $1',
       [token]
     );
+    const agentResult = await pool.query(
+      'SELECT email, reset_token_expiry FROM sales_agents WHERE reset_token = $1',
+      [token]
+    );
 
-    if (result.rows.length === 0) {
-      console.log('No user found with token:', token);
+    if (userResult.rows.length === 0 && agentResult.rows.length === 0) {
+      console.log('No user or agent found with token:', token);
       return res.status(400).json({ message: 'Invalid token' });
     }
 
-    const { email, reset_token_expiry } = result.rows[0];
+    const { email, reset_token_expiry } = userResult.rows[0] || agentResult.rows[0];
     const now = new Date();
 
     if (reset_token_expiry < now) {
@@ -347,11 +631,16 @@ router.post('/reset-password', [
 
   try {
     // Verify token and check expiry
-    const result = await pool.query(
+    const userResult = await pool.query(
       'SELECT * FROM users WHERE reset_token = $1 AND reset_token_expiry > NOW()',
       [token]
     );
-    if (result.rows.length === 0) {
+    const agentResult = await pool.query(
+      'SELECT * FROM sales_agents WHERE reset_token = $1 AND reset_token_expiry > NOW()',
+      [token]
+    );
+
+    if (userResult.rows.length === 0 && agentResult.rows.length === 0) {
       console.log('Invalid or expired token during reset:', token);
       return res.status(400).json({ message: 'Invalid or expired token' });
     }
@@ -361,10 +650,17 @@ router.post('/reset-password', [
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
     // Update password and clear reset token
-    await pool.query(
-      'UPDATE users SET password = $1, reset_token = NULL, reset_token_expiry = NULL WHERE reset_token = $2',
-      [hashedPassword, token]
-    );
+    if (userResult.rows.length > 0) {
+      await pool.query(
+        'UPDATE users SET password = $1, reset_token = NULL, reset_token_expiry = NULL WHERE reset_token = $2',
+        [hashedPassword, token]
+      );
+    } else {
+      await pool.query(
+        'UPDATE sales_agents SET password = $1, reset_token = NULL, reset_token_expiry = NULL WHERE reset_token = $2',
+        [hashedPassword, token]
+      );
+    }
 
     console.log('Password reset successful for token:', token);
     res.status(200).json({ message: 'Password reset successfully' });
@@ -447,7 +743,7 @@ router.post('/sales-agent-login', [
   try {
     // Find sales agent
     const agentResult = await pool.query(
-      'SELECT id, email, name, password, is_active FROM sales_agents WHERE email = $1',
+      'SELECT id, email, first_name || \' \' || last_name AS name, password, is_active, is_confirmed FROM sales_agents WHERE email = $1',
       [email]
     );
 
@@ -462,8 +758,14 @@ router.post('/sales-agent-login', [
       return res.status(403).json({ message: 'Account is not active' });
     }
 
-    // Compare password (plain text for now)
-    if (password !== agent.password) {
+    // Check if agent is confirmed
+    if (!agent.is_confirmed) {
+      return res.status(403).json({ message: 'Account is not confirmed. Please set your password.' });
+    }
+
+    // Compare password
+    const isMatch = await bcrypt.compare(password, agent.password);
+    if (!isMatch) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
@@ -513,10 +815,6 @@ router.post('/admin-login', [
 
     const admin = adminResult.rows[0];
 
-    if (password !== admin.password) {
-      return res.status(401).json({ message: 'Invalid email or password' });
-    }
-
     const token = jwt.sign(
       { id: admin.id, email: admin.email, userType: 'admin' },
       process.env.JWT_SECRET,
@@ -558,8 +856,14 @@ router.post('/change-password', [
   const userId = req.user.id;
 
   try {
-    // Fetch user
-    const userResult = await pool.query('SELECT password FROM users WHERE id = $1', [userId]);
+    // Check if user is a regular user or sales agent
+    let userResult = await pool.query('SELECT password FROM users WHERE id = $1', [userId]);
+    let userType = 'user';
+    if (userResult.rows.length === 0) {
+      userResult = await pool.query('SELECT password FROM sales_agents WHERE id = $1', [userId]);
+      userType = 'sales_agent';
+    }
+
     if (userResult.rows.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -577,7 +881,11 @@ router.post('/change-password', [
     const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
 
     // Update password
-    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, userId]);
+    if (userType === 'user') {
+      await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, userId]);
+    } else {
+      await pool.query('UPDATE sales_agents SET password = $1 WHERE id = $2', [hashedPassword, userId]);
+    }
 
     console.log('Password changed successfully for user ID:', userId);
     res.status(200).json({ message: 'Password changed successfully' });
