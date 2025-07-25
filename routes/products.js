@@ -704,8 +704,8 @@ router.post('/bulk', async (req, res, next) => {
         if (product.qty3Min && (isNaN(product.qty3Min) || product.qty3Min < 1)) {
           productErrors.push({ path: 'qty3Min', msg: 'Quantity 3 min must be at least 1' });
         }
-        if (product.longerDescription && product.longerDescription.length > 2000) {
-          productErrors.push({ path: 'longerDescription', msg: 'Detailed description must be less than 2000 characters' });
+        if (product.longerDescription === undefined || typeof product.longerDescription !== 'boolean') {
+          productErrors.push({ path: 'longerDescription', msg: 'Longer description must be a boolean (true/false)' });
         }
         if (product.productBarcode && product.productBarcode.length > 50) {
           productErrors.push({ path: 'productBarcode', msg: 'Product barcode must be less than 50 characters' });
@@ -830,7 +830,7 @@ router.post('/bulk', async (req, res, next) => {
             product.orderLevel || 0,
             product.productBarcode || null,
             product.etimsRefCode || null,
-            product.longerDescription || null,
+            product.longerDescription ? true : false,
             product.hasImage ? '/Uploads/placeholder.png' : null
           ]
         );
