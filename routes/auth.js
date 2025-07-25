@@ -137,7 +137,17 @@ router.get('/sales-agents', async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-
+const generateUserCode = async (name) => {
+  // Split the name into first and last names
+  const nameParts = name.trim().split(/\s+/);
+  const firstName = nameParts[0] || '';
+  const lastName = nameParts[1] || '';
+  const firstInitial = firstName.charAt(0).toUpperCase() || 'X'; // Default to 'X' if no first name
+  const lastInitial = lastName.charAt(0).toUpperCase() || 'X'; // Default to 'X' if no last name
+  const result = await pool.query('SELECT COUNT(*) FROM users');
+  const sequence = String(Number(result.rows[0].count) + 1).padStart(5, '0');
+  return `${firstInitial}${lastInitial}${sequence}`;
+};
 // Get a specific sales agent
 router.get('/sales-agents/:id', async (req, res) => {
   const { id } = req.params;
@@ -162,7 +172,7 @@ router.get('/sales-agents/:id/users', async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query(`
-      SELECT id, name, email
+      SELECT id, name, email, user_code
       FROM users
       WHERE sales_agent_id = $1
       ORDER BY name
@@ -484,6 +494,15 @@ router.post('/register', registerValidation, async (req, res) => {
       return res.status(400).json({ message: 'Email already registered' });
     }
 
+    // Generate user code
+    const userCode = await generateUserCode(name);
+
+    // Check for duplicate user code
+    const userCodeCheck = await pool.query('SELECT * FROM users WHERE user_code = $1', [userCode]);
+    if (userCodeCheck.rows.length > 0) {
+      return res.status(400).json({ message: 'User code already exists' });
+    }
+
     // Generate confirmation token
     const confirmationToken = crypto.randomBytes(32).toString('hex');
 
@@ -492,9 +511,9 @@ router.post('/register', registerValidation, async (req, res) => {
       `INSERT INTO users (
         email, registration_type, user_type, name, contact_name, phone_number, 
         cashback_phone_number, kra_pin, building_name, floor_number, room_number, 
-        street_name, area_name, city, country, sales_agent_id, confirmation_token
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-      RETURNING id`,
+        street_name, area_name, city, country, sales_agent_id, confirmation_token, user_code
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      RETURNING id, user_code`,
       [
         email,
         registrationType,
@@ -513,6 +532,7 @@ router.post('/register', registerValidation, async (req, res) => {
         country,
         registrationType === 'sales_agent' ? salesAgentId : null,
         confirmationToken,
+        userCode,
       ]
     );
 
