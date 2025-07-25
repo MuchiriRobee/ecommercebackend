@@ -29,9 +29,9 @@ const upload = multer({
   },
   fileFilter: (req, file, cb) => {
     const fileTypes = {
-      agentPhoto: /jpeg|png/,
-      idPhotoFront: /jpeg|png/,
-      idPhotoBack: /jpeg|png/,
+      agentPhoto: /jpeg|png|jpg/,
+      idPhotoFront: /jpeg|png|jpg/,
+      idPhotoBack: /jpeg|png|jpg/,
       kraCertificate: /pdf/,
     };
     const allowedType = fileTypes[file.fieldname];
