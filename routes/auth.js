@@ -126,10 +126,78 @@ const generateAgentCode = async (firstName, lastName) => {
 // Get all sales agents
 router.get('/sales-agents', async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, first_name || \' \' || last_name AS name FROM sales_agents WHERE is_active = TRUE ORDER BY name');
+    const result = await pool.query(`
+      SELECT id, first_name, last_name, agent_code, email, phone_number, id_number, kra_pin, is_active
+      FROM sales_agents
+      ORDER BY first_name, last_name
+    `);
     res.status(200).json(result.rows);
   } catch (err) {
     console.error('Error fetching sales agents:', err.stack);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get a specific sales agent
+router.get('/sales-agents/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT id, first_name, last_name, agent_code, email, phone_number, id_number, kra_pin, is_active
+      FROM sales_agents
+      WHERE id = $1
+    `, [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Sales agent not found' });
+    }
+    res.status(200).json({ agent: result.rows[0] });
+  } catch (err) {
+    console.error('Error fetching sales agent:', err.stack);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get users registered by a sales agent
+router.get('/sales-agents/:id/users', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT id, name, email
+      FROM users
+      WHERE sales_agent_id = $1
+      ORDER BY name
+    `, [id]);
+    res.status(200).json({ users: result.rows });
+  } catch (err) {
+    console.error('Error fetching users for sales agent:', err.stack);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Toggle sales agent status
+router.patch('/sales-agents/:id/status', async (req, res) => {
+  const { id } = req.params;
+  const { is_active } = req.body;
+
+  if (typeof is_active !== 'boolean') {
+    return res.status(400).json({ message: 'is_active must be a boolean' });
+  }
+
+  try {
+    const result = await pool.query(`
+      UPDATE sales_agents
+      SET is_active = $1, updated_at = NOW()
+      WHERE id = $2
+      RETURNING id, first_name, last_name, agent_code, email, phone_number, id_number, kra_pin, is_active
+    `, [is_active, id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Sales agent not found' });
+    }
+
+    res.status(200).json({ agent: result.rows[0], message: 'Sales agent status updated successfully' });
+  } catch (err) {
+    console.error('Error updating sales agent status:', err.stack);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -169,9 +237,9 @@ router.post(
       return res.status(400).json({ message: 'Phone number must start with 07 and be 10 digits' });
     }
 
-    // Validate ID number (10 digits)
+    // Validate ID number (8 digits)
     if (!/^\d{8}$/.test(id_number)) {
-      return res.status(400).json({ message: 'ID number must be exactly 10 digits' });
+      return res.status(400).json({ message: 'ID number must be exactly 8 digits' });
     }
 
     // Validate KRA PIN (10-11 alphanumeric characters)
@@ -275,9 +343,9 @@ router.put(
       return res.status(400).json({ message: 'Phone number must start with 07 and be 10 digits' });
     }
 
-    // Validate ID number (10 digits)
+    // Validate ID number (8 digits)
     if (!/^\d{8}$/.test(id_number)) {
-      return res.status(400).json({ message: 'ID number must be exactly 10 digits' });
+      return res.status(400).json({ message: 'ID number must be exactly 8 digits' });
     }
 
     // Validate KRA PIN (10-11 alphanumeric characters)
@@ -365,6 +433,7 @@ router.delete('/sales-agents/:id', async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 // Fetch user details
 router.get('/me', authenticateToken, async (req, res) => {
   try {
@@ -854,6 +923,7 @@ router.post('/admin-login', [
     res.status(500).json({ message: 'Server error during login' });
   }
 });
+
 
 // Change password endpoint
 router.post('/change-password', [
