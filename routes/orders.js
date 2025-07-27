@@ -1,198 +1,239 @@
 const express = require('express');
-const axios = require('axios');
+const { body, validationResult } = require('express-validator');
 const pool = require('../config/db');
-const { authenticateToken } = require('./auth');
-
 const router = express.Router();
+const jwt = require('jsonwebtoken');
 
-// Helper function to generate Base64-encoded Basic Auth credentials
-const getBasicAuth = () => {
-  const clientId = process.env.KCB_BUNI_CLIENT_ID;
-  const clientSecret = process.env.KCB_BUNI_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
-    throw new Error('KCB_BUNI_CLIENT_ID or KCB_BUNI_CLIENT_SECRET not set in .env');
+// Middleware to verify JWT token
+const verifyToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ message: 'Authentication token required' });
   }
-  return Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-};
-
-// Helper function to get KCB Buni access token
-const getAccessToken = async () => {
   try {
-    const response = await axios.post(
-      'https://uat.buni.kcbgroup.com/token',
-      'grant_type=client_credentials',
-      {
-        headers: {
-          'Authorization': `Basic ${getBasicAuth()}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      }
-    );
-    console.log('Access token retrieved:', response.data.access_token);
-    return response.data.access_token;
-  } catch (error) {
-    console.error('Error fetching access token:', error.response?.data || error.message);
-    throw new Error('Failed to authenticate with KCB Buni');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ message: 'Invalid or expired token' });
   }
 };
 
-// POST /api/orders - Create order and initiate STK Push
-router.post('/', authenticateToken, async (req, res) => {
-  const {
-    cartItems,
-    shippingInfo,
-    paymentMethod,
-    mpesaPhone,
-    orderNumber,
-    total,
-    shippingCost,
-    vatAmount,
-    totalCashback,
-  } = req.body;
+// Validation rules for creating an order
+const validateOrder = [
+  body('shippingInfo.username').trim().notEmpty().withMessage('Username is required'),
+  body('shippingInfo.email').isEmail().withMessage('Valid email is required'),
+  body('shippingInfo.phone').trim().notEmpty().withMessage('Phone number is required'),
+  body('shippingInfo.address').trim().notEmpty().withMessage('Address is required'),
+  body('shippingInfo.city').trim().notEmpty().withMessage('City is required'),
+  body('shippingInfo.country').trim().notEmpty().withMessage('Country is required'),
+  body('paymentMethod').isIn(['mpesa', 'card']).withMessage('Payment method must be mpesa or card'),
+  body('cartItems').isArray({ min: 1 }).withMessage('At least one cart item is required'),
+  body('cartItems.*.id').isInt({ min: 1 }).withMessage('Valid product ID is required'),
+  body('cartItems.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('subtotalExclVAT').custom(value => !isNaN(parseFloat(value)) && parseFloat(value) >= 0).withMessage('Subtotal must be a non-negative number'),
+  body('vatAmount').custom(value => !isNaN(parseFloat(value)) && parseFloat(value) >= 0).withMessage('VAT amount must be a non-negative number'),
+  body('shippingCost').custom(value => !isNaN(parseFloat(value)) && parseFloat(value) >= 0).withMessage('Shipping cost must be a non-negative number'),
+  body('total').custom(value => !isNaN(parseFloat(value)) && parseFloat(value) >= 0).withMessage('Total must be a non-negative number'),
+];
 
-  // Validate request
-  if (!cartItems || !Array.isArray(cartItems) || cartItems.length === 0) {
-    return res.status(400).json({ message: 'Cart items are required' });
-  }
-  if (!shippingInfo || !paymentMethod || !orderNumber || !total || !shippingCost || !vatAmount || !totalCashback) {
-    return res.status(400).json({ message: 'Missing required order details' });
-  }
-  if (paymentMethod === 'mpesa' && (!mpesaPhone || !/^0[0-9]{9}$/.test(mpesaPhone))) {
-    return res.status(400).json({ message: 'Invalid M-Pesa phone number' });
+// POST route to create a new order
+router.post('/', verifyToken, validateOrder, async (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    console.log('Validation errors:', errors.array());
+    return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
   }
 
   try {
-    // Insert order into database
-    const result = await pool.query(
-      `INSERT INTO orders (
-        user_id, order_number, cart_items, shipping_info, payment_method, mpesa_phone,
-        total, shipping_cost, vat_amount, total_cashback, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      RETURNING id`,
-      [
-        req.user.id,
-        orderNumber,
-        JSON.stringify(cartItems),
-        JSON.stringify(shippingInfo),
-        paymentMethod,
-        paymentMethod === 'mpesa' ? mpesaPhone : null,
-        total,
-        shippingCost,
-        vatAmount,
-        totalCashback,
-        'pending',
-      ]
-    );
-    const orderId = result.rows[0].id;
+    const { shippingInfo, paymentMethod, paymentDetails, cartItems, subtotalExclVAT, vatAmount, shippingCost, total } = req.body;
+    const userId = req.user.id; // From JWT token
+    console.log('Received order data:', JSON.stringify(req.body, null, 2));
+    const client = await pool.connect();
 
-    if (paymentMethod === 'mpesa') {
-      // Initiate STK Push
-      const accessToken = await getAccessToken();
-      const stkPushPayload = {
-        phoneNumber: mpesaPhone,
-        amount: total + shippingCost,
-        invoiceNumber: orderNumber,
-        callbackUrl: process.env.KCB_BUNI_CALLBACK_URL || 'https://your-callback-url.com/api/orders/callback',
-      };
+    try {
+      await client.query('BEGIN');
 
-      console.log('Sending STK Push request:', stkPushPayload);
-      const stkResponse = await axios.post(
-        'https://uat.buni.kcbgroup.com/mm/api/request/1.0.0/stkpush',
-        stkPushPayload,
-        {
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
+      // Validate cart items against products table
+      for (const item of cartItems) {
+        const productCheck = await client.query(
+          'SELECT id, selling_price1, vat, stock_units FROM products WHERE id = $1 AND active = true',
+          [item.id]
+        );
+        if (productCheck.rows.length === 0) {
+          throw new Error(`Product ID ${item.id} not found or inactive`);
         }
-      );
+        const product = productCheck.rows[0];
+        if (product.stock_units < item.quantity) {
+          throw new Error(`Insufficient stock for product ID ${item.id}`);
+        }
+      }
 
-      console.log('STK Push response:', stkResponse.data);
+      // Generate order number
+      const sequenceResult = await client.query('SELECT nextval(\'order_number_seq\')');
+      const sequenceNumber = sequenceResult.rows[0].nextval;
+      const orderNumber = `ORD${String(sequenceNumber).padStart(6, '0')}`;
 
-      // Update order with STK Push details
-      await pool.query(
-        `UPDATE orders SET merchant_request_id = $1, checkout_request_id = $2, status = $3
-        WHERE id = $4`,
+      // Insert order
+      const orderResult = await client.query(
+        `
+        INSERT INTO orders (
+          order_number, user_id, payment_method, payment_details, shipping_info,
+          subtotal_excl_vat, vat_amount, shipping_cost, total_amount
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id, order_number, created_at
+        `,
         [
-          stkResponse.data.merchantRequestID,
-          stkResponse.data.checkoutRequestID || stkResponse.data.merchantRequestID,
-          'initiated',
-          orderId,
+          orderNumber,
+          userId,
+          paymentMethod,
+          paymentDetails,
+          shippingInfo,
+          parseFloat(subtotalExclVAT),
+          parseFloat(vatAmount),
+          parseFloat(shippingCost),
+          parseFloat(total),
         ]
       );
 
-      return res.status(201).json({
-        message: 'Order created and STK Push initiated',
+      const orderId = orderResult.rows[0].id;
+      const createdAt = orderResult.rows[0].created_at;
+
+      // Insert order items
+      for (const item of cartItems) {
+        const product = await client.query(
+          'SELECT selling_price1, vat FROM products WHERE id = $1',
+          [item.id]
+        ).then(res => res.rows[0]);
+        const unitPrice = product.selling_price1;
+        const vatRate = parseFloat(product.vat) || 0.16;
+        const priceExclVAT = Math.round(unitPrice / (1 + vatRate));
+        const subtotalItemExclVAT = priceExclVAT * item.quantity;
+
+        await client.query(
+          `
+          INSERT INTO order_items (
+            order_id, product_id, quantity, unit_price, vat_rate, subtotal_excl_vat
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+          `,
+          [orderId, item.id, item.quantity, unitPrice, vatRate, subtotalItemExclVAT]
+        );
+
+        // Update stock units
+        await client.query(
+          'UPDATE products SET stock_units = stock_units - $1 WHERE id = $2',
+          [item.quantity, item.id]
+        );
+      }
+
+      await client.query('COMMIT');
+      res.status(201).json({
+        message: 'Order created',
         orderId,
-        merchantRequestID: stkResponse.data.merchantRequestID,
-        transactionStatus: stkResponse.data.transactionStatus,
+        orderNumber,
+        createdAt,
       });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Failed to create order', error: err.message });
+    } finally {
+      client.release();
     }
-
-    // Non-M-Pesa orders
-    return res.status(201).json({
-      message: 'Order created successfully',
-      orderId,
-    });
-  } catch (error) {
-    console.error('Error creating order:', error.response?.data || error.message);
-    return res.status(500).json({ message: 'Failed to create order' });
+  } catch (err) {
+    next(err);
   }
 });
 
-// GET /api/orders/:orderId - Get order status
-router.get('/:orderId', authenticateToken, async (req, res) => {
-  const { orderId } = req.params;
-
+// GET route to fetch all orders for a user
+router.get('/user/:userId', verifyToken, async (req, res, next) => {
   try {
-    const result = await pool.query(
-      `SELECT status FROM orders WHERE id = $1 AND user_id = $2`,
-      [orderId, req.user.id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'Order not found' });
+    const { userId } = req.params;
+    if (req.user.id !== parseInt(userId)) {
+      return res.status(403).json({ message: 'Unauthorized access' });
     }
 
-    return res.status(200).json({ status: result.rows[0].status });
-  } catch (error) {
-    console.error('Error fetching order status:', error.message);
-    return res.status(500).json({ message: 'Failed to fetch order status' });
+    const client = await pool.connect();
+    try {
+      const ordersResult = await client.query(
+        `
+        SELECT o.id, o.order_number, o.created_at, o.payment_method, o.shipping_info,
+               o.subtotal_excl_vat, o.vat_amount, o.shipping_cost, o.total_amount, o.status
+        FROM orders o
+        WHERE o.user_id = $1
+        ORDER BY o.created_at DESC
+        `,
+        [userId]
+      );
+
+      const orders = ordersResult.rows;
+      const ordersWithItems = await Promise.all(orders.map(async (order) => {
+        const itemsResult = await client.query(
+          `
+          SELECT oi.id, oi.product_id, oi.quantity, oi.unit_price, oi.vat_rate, oi.subtotal_excl_vat,
+                 p.product_name, p.image_url
+          FROM order_items oi
+          JOIN products p ON oi.product_id = p.id
+          WHERE oi.order_id = $1
+          `,
+          [order.id]
+        );
+        return { ...order, items: itemsResult.rows };
+      }));
+
+      res.json(ordersWithItems);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    next(err);
   }
 });
 
-// POST /api/orders/callback - Handle M-Pesa callback
-router.post('/callback', async (req, res) => {
-  const callbackData = req.body;
-  console.log('M-Pesa Callback:', callbackData);
-
+// GET route to fetch a specific order by ID
+router.get('/:orderId', verifyToken, async (req, res, next) => {
   try {
-    const { merchantRequestID, resultCode, resultDesc, checkoutRequestID } = callbackData;
-    if (!merchantRequestID) {
-      return res.status(400).json({ message: 'Invalid callback data' });
+    const { orderId } = req.params;
+    const client = await pool.connect();
+    try {
+      const orderResult = await client.query(
+        `
+        SELECT o.id, o.order_number, o.created_at, o.payment_method, o.payment_details, o.shipping_info,
+               o.subtotal_excl_vat, o.vat_amount, o.shipping_cost, o.total_amount, o.status
+        FROM orders o
+        WHERE o.id = $1 AND o.user_id = $2
+        `,
+        [orderId, req.user.id]
+      );
+
+      if (orderResult.rows.length === 0) {
+        return res.status(404).json({ message: 'Order not found or unauthorized' });
+      }
+
+      const order = orderResult.rows[0];
+      const itemsResult = await client.query(
+        `
+        SELECT oi.id, oi.product_id, oi.quantity, oi.unit_price, oi.vat_rate, oi.subtotal_excl_vat,
+               p.product_name, p.image_url
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        WHERE oi.order_id = $1
+        `,
+        [orderId]
+      );
+
+      res.json({ ...order, items: itemsResult.rows });
+    } finally {
+      client.release();
     }
-
-    const status = resultCode === '0' ? 'completed' : 'failed';
-    await pool.query(
-      `UPDATE orders SET status = $1, updated_at = CURRENT_TIMESTAMP
-      WHERE merchant_request_id = $2`,
-      [status, merchantRequestID]
-    );
-
-    return res.status(200).json({
-      ResultCode: 0,
-      ResultDesc: 'Notification received successfully',
-    });
-  } catch (error) {
-    console.error('Error processing callback:', error.message);
-    return res.status(500).json({ message: 'Failed to process callback' });
+  } catch (err) {
+    next(err);
   }
 });
 
-// GET /api/orders/callback - Handle incorrect GET requests (for debugging)
-router.get('/callback', (req, res) => {
-  console.log('Received GET request to /api/orders/callback:', req.query);
-  return res.status(405).json({ message: 'Method Not Allowed. Use POST for M-Pesa callback.' });
+// Error handling middleware
+router.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ message: 'Something went wrong!', error: err.message });
 });
 
 module.exports = router;

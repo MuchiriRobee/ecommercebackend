@@ -45,7 +45,7 @@ const handleValidationErrors = (req, res, next) => {
 // Validation rules for a single product
 const validateSingleProduct = [
   body('productName').trim().notEmpty().withMessage('Product name is required'),
-  body('productCode').matches(/^[A-Z]\d{9}$/).withMessage('Product code must be1 letter followed by 9 digits (e.g., E010101001)'),
+  body('productCode').matches(/^[A-Z]\d{9}$/).withMessage('Product code must be 1 letter followed by 9 digits (e.g., E010101001)'),
   body('parentCatId').toInt().isInt({ min: 1 }).withMessage('Valid parent category ID is required'),
   body('categoryId').toInt().isInt({ min: 1 }).withMessage('Valid category ID is required'),
   body('subcategoryId').toInt().isInt({ min: 1 }).withMessage('Valid subcategory ID is required'),
@@ -391,6 +391,7 @@ router.get('/subcategory/:subcategoryId', async (req, res, next) => {
     next(err);
   }
 });
+
 // PUT route to update a product
 router.put('/:id', upload.single('image'), parseFormData, validateSingleProduct, (req, res, next) => {
   const errors = validationResult(req);
@@ -856,7 +857,8 @@ router.post('/bulk', async (req, res, next) => {
     next(err);
   }
 });
-// DELETE route to soft delete a product
+
+// DELETE route to hard delete a product
 router.delete('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -864,14 +866,28 @@ router.delete('/:id', async (req, res, next) => {
     try {
       await client.query('BEGIN');
 
-      const productCheck = await client.query('SELECT id FROM products WHERE id = $1', [id]);
+      const productCheck = await client.query('SELECT id, image_url FROM products WHERE id = $1', [id]);
       if (productCheck.rows.length === 0) {
         throw new Error('Product not found');
       }
 
-      await client.query('UPDATE products SET active = false WHERE id = $1', [id]);
+      // Delete the product from the database
+      await client.query('DELETE FROM products WHERE id = $1', [id]);
+
+      // Optionally, delete the associated image file from the server
+      if (productCheck.rows[0].image_url) {
+        const fs = require('fs').promises;
+        const path = require('path');
+        const imagePath = path.join(__dirname, '../', productCheck.rows[0].image_url);
+        try {
+          await fs.unlink(imagePath);
+        } catch (err) {
+          console.warn(`Failed to delete image file ${imagePath}: ${err.message}`);
+        }
+      }
+
       await client.query('COMMIT');
-      res.json({ message: 'Product deactivated' });
+      res.json({ message: 'Product deleted' });
     } catch (err) {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Failed to delete product', error: err.message });
@@ -882,6 +898,7 @@ router.delete('/:id', async (req, res, next) => {
     next(err);
   }
 });
+
 // Error handling middleware
 router.use((err, req, res, next) => {
   console.error(err.stack);
