@@ -145,12 +145,9 @@ router.post('/', verifyToken, validateOrder, async (req, res, next) => {
 });
 
 // GET route to fetch all orders for a user
-router.get('/user/:userId', verifyToken, async (req, res, next) => {
+router.get('/user/:userId', async (req, res, next) => {
   try {
     const { userId } = req.params;
-    if (req.user.id !== parseInt(userId)) {
-      return res.status(403).json({ message: 'Unauthorized access' });
-    }
 
     const client = await pool.connect();
     try {
@@ -190,7 +187,7 @@ router.get('/user/:userId', verifyToken, async (req, res, next) => {
 });
 
 // GET route to fetch a specific order by ID
-router.get('/:orderId', verifyToken, async (req, res, next) => {
+router.get('/:orderId', async (req, res, next) => {
   try {
     const { orderId } = req.params;
     const client = await pool.connect();
@@ -200,9 +197,9 @@ router.get('/:orderId', verifyToken, async (req, res, next) => {
         SELECT o.id, o.order_number, o.created_at, o.payment_method, o.payment_details, o.shipping_info,
                o.subtotal_excl_vat, o.vat_amount, o.shipping_cost, o.total_amount, o.status
         FROM orders o
-        WHERE o.id = $1 AND o.user_id = $2
+        WHERE o.id = $1 AND (o.user_id = $2 OR $3 = 'admin')
         `,
-        [orderId, req.user.id]
+        [orderId, req.user.id, req.user.role]
       );
 
       if (orderResult.rows.length === 0) {
