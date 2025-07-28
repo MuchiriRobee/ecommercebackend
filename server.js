@@ -12,6 +12,7 @@ const categoriesRoutes = require('./routes/categories');
 const productsRouter = require('./routes/products');
 const suppliersRouter = require('./routes/suppliers');
 const ordersRouter = require('./routes/orders');
+const usersRouter = require('./routes/users');
 
 const app = express();
 
@@ -45,6 +46,7 @@ app.use('/api/categories', categoriesRoutes);
 app.use('/api/products', productsRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/orders', ordersRouter);
+app.use('/api/users', usersRouter);
 
 // Error handling
 app.use((err, req, res, next) => {
