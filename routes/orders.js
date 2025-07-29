@@ -31,6 +31,8 @@ const validateOrder = [
   body('cartItems').isArray({ min: 1 }).withMessage('At least one cart item is required'),
   body('cartItems.*.id').isInt({ min: 1 }).withMessage('Valid product ID is required'),
   body('cartItems.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('cartItems.*.unitPrice').optional().isFloat({ min: 0 }).withMessage('Unit price must be a non-negative number'),
+  body('cartItems.*.cashbackPercent').optional().isFloat({ min: 0, max: 100 }).withMessage('Cashback percent must be between 0 and 100'),
   body('subtotalExclVAT').custom(value => !isNaN(parseFloat(value)) && parseFloat(value) >= 0).withMessage('Subtotal must be a non-negative number'),
   body('vatAmount').custom(value => !isNaN(parseFloat(value)) && parseFloat(value) >= 0).withMessage('VAT amount must be a non-negative number'),
   body('shippingCost').custom(value => !isNaN(parseFloat(value)) && parseFloat(value) >= 0).withMessage('Shipping cost must be a non-negative number'),
@@ -54,10 +56,13 @@ router.post('/', verifyToken, validateOrder, async (req, res, next) => {
     try {
       await client.query('BEGIN');
 
-      // Validate cart items against products table
+      // Fetch and validate cart items against products table
+      let calculatedSubtotalExclVAT = 0;
+      const validatedItems = [];
+
       for (const item of cartItems) {
         const productCheck = await client.query(
-          'SELECT id, selling_price1, vat, stock_units FROM products WHERE id = $1 AND active = true',
+          'SELECT id, product_name, selling_price1, vat, stock_units, image_url, product_code, cashback_rate, qty1_min, qty1_max, selling_price2, qty2_min, qty2_max, selling_price3, qty3_min FROM products WHERE id = $1 AND active = true',
           [item.id]
         );
         if (productCheck.rows.length === 0) {
@@ -67,6 +72,66 @@ router.post('/', verifyToken, validateOrder, async (req, res, next) => {
         if (product.stock_units < item.quantity) {
           throw new Error(`Insufficient stock for product ID ${item.id}`);
         }
+
+        // Reconstruct tier pricing
+        const tier_pricing = [
+          { min_quantity: product.qty1_min || 1, max_quantity: product.qty1_max || null, price: parseFloat(product.selling_price1) || 0 },
+          ...(product.selling_price2 && product.qty2_min
+            ? [{ min_quantity: product.qty2_min, max_quantity: product.qty2_max || null, price: parseFloat(product.selling_price2) }]
+            : []),
+          ...(product.selling_price3 && product.qty3_min
+            ? [{ min_quantity: product.qty3_min, max_quantity: null, price: parseFloat(product.selling_price3) }]
+            : []),
+        ];
+
+        // Determine the correct price based on quantity
+        const quantity = parseInt(item.quantity);
+        const tier = tier_pricing.find(
+          t => quantity >= t.min_quantity && (!t.max_quantity || quantity <= t.max_quantity)
+        ) || tier_pricing[0];
+        const unitPrice = parseFloat(item.unitPrice) || tier.price;
+        const vatRate = parseFloat(item.vatRate) || product.vat || 0.16;
+        const priceExclVAT = Number((unitPrice / (1 + vatRate/100)).toFixed(2)); // Fixed VAT calculation
+        const subtotalItemExclVAT = priceExclVAT * quantity;
+        calculatedSubtotalExclVAT += subtotalItemExclVAT;
+
+        const cashbackPercent = parseFloat(item.cashbackPercent) || parseFloat(product.cashback_rate) || 5;
+        const cashbackAmount = Number((subtotalItemExclVAT * (cashbackPercent / 100)).toFixed(2));
+
+        validatedItems.push({
+          ...item,
+          product_name: product.product_name,
+          image_url: product.image_url,
+          product_code: product.product_code,
+          unitPrice,
+          vatRate,
+          subtotalItemExclVAT,
+          cashbackPercent,
+          cashbackAmount,
+        });
+      }
+
+      // Validate subtotal
+      const receivedSubtotalExclVAT = parseFloat(subtotalExclVAT).toFixed(2);
+      calculatedSubtotalExclVAT = parseFloat(calculatedSubtotalExclVAT).toFixed(2);
+      if (receivedSubtotalExclVAT !== calculatedSubtotalExclVAT) {
+        throw new Error(`Subtotal mismatch: received ${receivedSubtotalExclVAT}, calculated ${calculatedSubtotalExclVAT}`);
+      }
+
+      // Validate shipping cost
+      const expectedShippingCost = 299; // As defined in CheckoutPage.jsx
+      if (parseFloat(shippingCost).toFixed(2) !== parseFloat(expectedShippingCost).toFixed(2)) {
+        throw new Error(`Shipping cost mismatch: received ${shippingCost}, expected ${expectedShippingCost}`);
+      }
+
+      // Validate total
+      const calculatedTotal = Math.round(
+        parseFloat(calculatedSubtotalExclVAT) +
+        parseFloat(vatAmount) +
+        parseFloat(shippingCost)
+      );
+      if (parseFloat(total).toFixed(2) !== parseFloat(calculatedTotal).toFixed(2)) {
+        throw new Error(`Total mismatch: received ${total}, calculated ${calculatedTotal}`);
       }
 
       // Generate order number
@@ -99,24 +164,28 @@ router.post('/', verifyToken, validateOrder, async (req, res, next) => {
       const orderId = orderResult.rows[0].id;
       const createdAt = orderResult.rows[0].created_at;
 
-      // Insert order items
-      for (const item of cartItems) {
-        const product = await client.query(
-          'SELECT selling_price1, vat FROM products WHERE id = $1',
-          [item.id]
-        ).then(res => res.rows[0]);
-        const unitPrice = product.selling_price1;
-        const vatRate = parseFloat(product.vat) || 0.16;
-        const priceExclVAT = Math.round(unitPrice / (1 + vatRate));
-        const subtotalItemExclVAT = priceExclVAT * item.quantity;
-
+      // Insert order items with additional product details
+      for (const item of validatedItems) {
         await client.query(
           `
           INSERT INTO order_items (
-            order_id, product_id, quantity, unit_price, vat_rate, subtotal_excl_vat
-          ) VALUES ($1, $2, $3, $4, $5, $6)
+            order_id, product_id, product_name, image_url, product_code, quantity,
+            unit_price, vat_rate, subtotal_excl_vat, cashback_amount, cashback_percent
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
           `,
-          [orderId, item.id, item.quantity, unitPrice, vatRate, subtotalItemExclVAT]
+          [
+            orderId,
+            item.id,
+            item.product_name,
+            item.image_url,
+            item.product_code,
+            item.quantity,
+            item.unitPrice,
+            item.vatRate,
+            item.subtotalItemExclVAT,
+            item.cashbackAmount,
+            item.cashbackPercent,
+          ]
         );
 
         // Update stock units
@@ -167,9 +236,8 @@ router.get('/user/:userId', async (req, res, next) => {
         const itemsResult = await client.query(
           `
           SELECT oi.id, oi.product_id, oi.quantity, oi.unit_price, oi.vat_rate, oi.subtotal_excl_vat,
-                 p.product_name, p.image_url
+                 oi.cashback_amount, oi.product_name, oi.image_url, oi.product_code, oi.cashback_percent
           FROM order_items oi
-          JOIN products p ON oi.product_id = p.id
           WHERE oi.order_id = $1
           `,
           [order.id]
@@ -210,9 +278,8 @@ router.get('/:orderId', async (req, res, next) => {
       const itemsResult = await client.query(
         `
         SELECT oi.id, oi.product_id, oi.quantity, oi.unit_price, oi.vat_rate, oi.subtotal_excl_vat,
-               p.product_name, p.image_url
+               oi.cashback_amount, oi.product_name, oi.image_url, oi.product_code, oi.cashback_percent
         FROM order_items oi
-        JOIN products p ON oi.product_id = p.id
         WHERE oi.order_id = $1
         `,
         [orderId]
