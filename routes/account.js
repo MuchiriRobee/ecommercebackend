@@ -2,40 +2,6 @@ const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-
-// Ensure uploads directory exists
-const uploadDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, `profile-${req.user.id}-${uniqueSuffix}${path.extname(file.originalname)}`);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
-  fileFilter: (req, file, cb) => {
-    const filetypes = /jpeg|jpg|png/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = filetypes.test(file.mimetype);
-    if (extname && mimetype) {
-      return cb(null, true);
-    }
-    cb(new Error('Only JPEG and PNG images are allowed'));
-  },
-});
 
 // Middleware to verify JWT
 const authenticateToken = (req, res, next) => {
@@ -57,11 +23,14 @@ const authenticateToken = (req, res, next) => {
 
 // GET /api/account/profile - Fetch user profile
 router.get('/profile', authenticateToken, async (req, res) => {
-    console.log('Received GET /api/account/profile for user:', req.user.id);
+  console.log('Received GET /api/account/profile for user:', req.user.id);
   try {
     const userId = req.user.id;
     const result = await pool.query(
-      'SELECT id, name, email, phone_number, area_name, city, profile_picture FROM users WHERE id = $1',
+      `SELECT id, name, email, phone_number, contact_name, cashback_phone_number, 
+       kra_pin, building_name, floor_number, room_number, street_name, area_name, 
+       city, country 
+       FROM users WHERE id = $1`,
       [userId]
     );
 
@@ -74,8 +43,16 @@ router.get('/profile', authenticateToken, async (req, res) => {
       username: user.name,
       email: user.email,
       phone: user.phone_number,
-      address: user.area_name && user.city ? `${user.area_name}, ${user.city}` : '',
-      profilePicture: user.profile_picture ? `/uploads/${user.profile_picture}` : null,
+      contact_name: user.contact_name,
+      cashback_phone_number: user.cashback_phone_number,
+      kra_pin: user.kra_pin,
+      building_name: user.building_name,
+      floor_number: user.floor_number,
+      room_number: user.room_number,
+      street_name: user.street_name,
+      area_name: user.area_name,
+      city: user.city,
+      country: user.country,
     });
   } catch (err) {
     console.error('Error fetching profile:', err.message);
@@ -85,40 +62,53 @@ router.get('/profile', authenticateToken, async (req, res) => {
 
 // PUT /api/account/profile - Update user profile
 router.put('/profile', authenticateToken, async (req, res) => {
-  const { username, email, phone, address } = req.body;
+  const {
+    building_name,
+    floor_number,
+    room_number,
+    street_name,
+    area_name,
+    city,
+    country,
+  } = req.body;
   const userId = req.user.id;
 
   try {
     // Validate input
-    if (!username || !email || !phone) {
-      return res.status(400).json({ message: 'Username, email, and phone are required' });
+    if (!building_name && !floor_number && !room_number && !street_name && !area_name && !city && !country) {
+      return res.status(400).json({ message: 'At least one field must be provided for update' });
     }
 
-    // Split address into area_name and city (assuming format: "Area, City")
-    let area_name = null;
-    let city = null;
-    if (address) {
-      const [area, cityPart] = address.split(',').map(s => s.trim());
-      area_name = area || null;
-      city = cityPart || null;
-    }
-
-    // Check if email is already used by another user
-    const emailCheck = await pool.query(
-      'SELECT id FROM users WHERE email = $1 AND id != $2',
-      [email, userId]
+    // Fetch current user data to retain non-editable fields
+    const currentUser = await pool.query(
+      `SELECT name, email, phone_number, contact_name, cashback_phone_number, kra_pin 
+       FROM users WHERE id = $1`,
+      [userId]
     );
-    if (emailCheck.rows.length > 0) {
-      return res.status(400).json({ message: 'Email is already in use' });
+
+    if (currentUser.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
     }
 
-    // Update user
+    // Update user with only editable fields
     const result = await pool.query(
       `UPDATE users 
-       SET name = $1, email = $2, phone_number = $3, area_name = $4, city = $5 
-       WHERE id = $6 
-       RETURNING id, name, email, phone_number, area_name, city`,
-      [username, email, phone, area_name, city, userId]
+       SET building_name = $1, floor_number = $2, room_number = $3, 
+           street_name = $4, area_name = $5, city = $6, country = $7
+       WHERE id = $8 
+       RETURNING id, name, email, phone_number, contact_name, cashback_phone_number, 
+                 kra_pin, building_name, floor_number, room_number, street_name, 
+                 area_name, city, country`,
+      [
+        building_name || null,
+        floor_number || null,
+        room_number || null,
+        street_name || null,
+        area_name || null,
+        city || null,
+        country || null,
+        userId,
+      ]
     );
 
     if (result.rows.length === 0) {
@@ -130,86 +120,20 @@ router.put('/profile', authenticateToken, async (req, res) => {
       username: updatedUser.name,
       email: updatedUser.email,
       phone: updatedUser.phone_number,
-      address: updatedUser.area_name && updatedUser.city ? `${updatedUser.area_name}, ${updatedUser.city}` : '',
+      contact_name: updatedUser.contact_name,
+      cashback_phone_number: updatedUser.cashback_phone_number,
+      kra_pin: updatedUser.kra_pin,
+      building_name: updatedUser.building_name,
+      floor_number: updatedUser.floor_number,
+      room_number: updatedUser.room_number,
+      street_name: updatedUser.street_name,
+      area_name: updatedUser.area_name,
+      city: updatedUser.city,
+      country: updatedUser.country,
       message: 'Profile updated successfully',
     });
   } catch (err) {
     console.error('Error updating profile:', err.message);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-// POST /api/account/profile/picture - Upload profile picture
-router.post('/profile/picture', authenticateToken, upload.single('profilePicture'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
-
-    const userId = req.user.id;
-    const profilePicturePath = req.file.filename;
-
-    // Delete old profile picture if exists
-    const oldPicture = await pool.query(
-      'SELECT profile_picture FROM users WHERE id = $1',
-      [userId]
-    );
-    if (oldPicture.rows[0]?.profile_picture) {
-      const oldPath = path.join(uploadDir, oldPicture.rows[0].profile_picture);
-      if (fs.existsSync(oldPath)) {
-        fs.unlinkSync(oldPath);
-      }
-    }
-
-    // Update profile picture
-    await pool.query(
-      'UPDATE users SET profile_picture = $1 WHERE id = $2',
-      [profilePicturePath, userId]
-    );
-
-    res.status(200).json({
-      profilePicture: `/uploads/${profilePicturePath}`,
-      message: 'Profile picture updated successfully',
-    });
-  } catch (err) {
-    console.error('Error uploading profile picture:', err.message);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-// DELETE /api/account/profile/picture - Remove profile picture
-router.delete('/profile/picture', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    // Get current profile picture
-    const result = await pool.query(
-      'SELECT profile_picture FROM users WHERE id = $1',
-      [userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const profilePicture = result.rows[0].profile_picture;
-    if (profilePicture) {
-      // Delete file from server
-      const filePath = path.join(uploadDir, profilePicture);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-
-      // Update database
-      await pool.query(
-        'UPDATE users SET profile_picture = NULL WHERE id = $1',
-        [userId]
-      );
-    }
-
-    res.status(200).json({ message: 'Profile picture removed successfully' });
-  } catch (err) {
-    console.error('Error removing profile picture:', err.message);
     res.status(500).json({ message: 'Server error' });
   }
 });
